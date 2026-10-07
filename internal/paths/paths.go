@@ -6,8 +6,7 @@ type Defaults struct {
 	Config   string
 	LogFile  string
 	ErrorLog string
-	// IPCAddress is a unix socket path (darwin) or a loopback TCP address (windows).
-	IPCNetwork string
+	// IPCAddress is a unix socket path (darwin) or a named pipe (windows).
 	IPCAddress string
 }
 

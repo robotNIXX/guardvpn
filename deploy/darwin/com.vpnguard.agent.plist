@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Starts the tray agent in every user's GUI session at login.
+	     The agent only shows status and edits settings; enforcement is
+	     done by the root daemon (com.vpnguard.daemon). -->
+	<key>Label</key>
+	<string>com.vpnguard.agent</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Applications/VPN Guard.app/Contents/MacOS/vpn-guard-agent</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+</dict>
+</plist>

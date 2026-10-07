@@ -2,24 +2,38 @@ package process
 
 import (
 	"context"
+	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/robotNIXX/guardvpn/internal/logging"
 )
 
-// Policy tells the monitor whether the application may run.
+// Policy tells the monitor whether an application may run.
 type Policy interface {
 	Allowed() bool
+}
+
+// PolicyFunc adapts a function to Policy.
+type PolicyFunc func() bool
+
+// Allowed implements Policy.
+func (f PolicyFunc) Allowed() bool { return f() }
+
+// Target is one controlled application.
+type Target struct {
+	Name     string
+	Identity Identity
+	Policy   Policy
 }
 
 // MonitorOptions configures a Monitor.
 type MonitorOptions struct {
 	Lister           Lister
-	Identity         Identity
 	Killer           Killer
-	Policy           Policy
+	Targets          []Target
 	Interval         time.Duration // process scan interval (500 ms)
 	TerminateTimeout time.Duration // SIGTERM -> SIGKILL delay
 	// Changes triggers an immediate scan (e.g. guard state changes).
@@ -32,17 +46,30 @@ type MonitorOptions struct {
 // seen as /bin/sh may become the target a moment later.
 type verdictKey struct {
 	Key
-	Path string
+	Path   string
+	Target int
 }
 
-// Monitor periodically scans processes and terminates the application
-// whenever the policy does not allow it.
+type running struct {
+	proc    Proc
+	targets []string
+}
+
+// Monitor periodically scans processes and terminates every process of a
+// target whose policy does not allow it to run.
 type Monitor struct {
-	o MonitorOptions
+	lister Lister
+	killer Killer
+	log    *logging.Logger
+	change <-chan struct{}
+	retime chan struct{}
 
 	mu          sync.Mutex
-	verdicts    map[verdictKey]bool // IsTarget cache
-	running     map[Key]Proc        // currently running target processes
+	targets     []Target
+	interval    time.Duration
+	termTimeout time.Duration
+	verdicts    map[verdictKey]bool
+	running     map[Key]running
 	terminating map[Key]bool
 }
 
@@ -52,16 +79,54 @@ func NewMonitor(o MonitorOptions) *Monitor {
 		o.Log = logging.Discard()
 	}
 	return &Monitor{
-		o:           o,
+		lister:      o.Lister,
+		killer:      o.Killer,
+		log:         o.Log,
+		change:      o.Changes,
+		retime:      make(chan struct{}, 1),
+		targets:     o.Targets,
+		interval:    o.Interval,
+		termTimeout: o.TerminateTimeout,
 		verdicts:    map[verdictKey]bool{},
-		running:     map[Key]Proc{},
+		running:     map[Key]running{},
 		terminating: map[Key]bool{},
+	}
+}
+
+// SetTargets replaces the controlled applications (hot reload) and
+// requests an immediate rescan.
+func (m *Monitor) SetTargets(ts []Target) {
+	m.mu.Lock()
+	m.targets = ts
+	clear(m.verdicts)
+	m.mu.Unlock()
+	m.Poke()
+}
+
+// SetTiming updates the scan interval and termination timeout.
+func (m *Monitor) SetTiming(interval, terminateTimeout time.Duration) {
+	m.mu.Lock()
+	changed := interval != m.interval
+	m.interval, m.termTimeout = interval, terminateTimeout
+	m.mu.Unlock()
+	if changed {
+		m.Poke()
+	}
+}
+
+// Poke requests an immediate scan.
+func (m *Monitor) Poke() {
+	select {
+	case m.retime <- struct{}{}:
+	default:
 	}
 }
 
 // Run scans until ctx is cancelled.
 func (m *Monitor) Run(ctx context.Context) {
-	t := time.NewTicker(m.o.Interval)
+	m.mu.Lock()
+	t := time.NewTicker(m.interval)
+	m.mu.Unlock()
 	defer t.Stop()
 	m.scan(ctx)
 	for {
@@ -69,28 +134,36 @@ func (m *Monitor) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-		case <-m.o.Changes:
+		case <-m.change:
+		case <-m.retime:
+			m.mu.Lock()
+			t.Reset(m.interval)
+			m.mu.Unlock()
 		}
 		m.scan(ctx)
 	}
 }
 
-// TargetPIDs returns the PIDs of running target processes.
-func (m *Monitor) TargetPIDs() []int {
+// PIDs returns running target PIDs grouped by application name.
+func (m *Monitor) PIDs() map[string][]int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	pids := make([]int, 0, len(m.running))
-	for k := range m.running {
-		pids = append(pids, k.PID)
+	out := map[string][]int{}
+	for k, r := range m.running {
+		for _, name := range r.targets {
+			out[name] = append(out[name], k.PID)
+		}
 	}
-	sort.Ints(pids)
-	return pids
+	for _, pids := range out {
+		sort.Ints(pids)
+	}
+	return out
 }
 
 func (m *Monitor) scan(ctx context.Context) {
-	procs, err := m.o.Lister.List()
+	procs, err := m.lister.List()
 	if err != nil {
-		m.o.Log.Error("process list failed", "err", err)
+		m.log.Error("process list failed", "err", err)
 		return
 	}
 
@@ -104,32 +177,49 @@ func (m *Monitor) scan(ctx context.Context) {
 			delete(m.verdicts, k)
 		}
 	}
-	isTarget := func(p Proc) bool {
-		k := verdictKey{p.Key(), p.Path}
-		if v, ok := m.verdicts[k]; ok {
+
+	current := map[Key]running{}
+	deny := map[Key]bool{}
+	for ti, t := range m.targets {
+		isTarget := func(p Proc) bool {
+			k := verdictKey{p.Key(), p.Path, ti}
+			if v, ok := m.verdicts[k]; ok {
+				return v
+			}
+			v := t.Identity.IsTarget(p)
+			m.verdicts[k] = v
 			return v
 		}
-		v := m.o.Identity.IsTarget(p)
-		m.verdicts[k] = v
-		return v
-	}
-	targets := SelectTargets(procs, isTarget)
-
-	// Policy is read after the process list: a state change in between is
-	// picked up by the next scan, which Changes triggers immediately.
-	allowed := m.o.Policy.Allowed()
-
-	current := make(map[Key]Proc, len(targets))
-	var toKill []Proc
-	for _, p := range targets {
-		k := p.Key()
-		current[k] = p
-		if _, seen := m.running[k]; !seen {
-			m.o.Log.Info("application detected", "pid", p.PID, "ppid", p.PPID, "path", p.Path, "allowed", allowed)
+		matched := SelectTargets(procs, isTarget)
+		if len(matched) == 0 {
+			continue
 		}
-		if !allowed && !m.terminating[k] {
+		// Policy is read after the process list: a state change in
+		// between is picked up by the next scan, which Changes triggers.
+		allowed := t.Policy.Allowed()
+		for _, p := range matched {
+			r := current[p.Key()]
+			r.proc = p
+			r.targets = append(r.targets, t.Name)
+			current[p.Key()] = r
+			if !allowed {
+				deny[p.Key()] = true // any controlling app forbidding it wins
+			}
+		}
+	}
+
+	var toKill []Proc
+	names := map[int]string{}
+	for k, r := range current {
+		name := strings.Join(r.targets, ",")
+		if prev, seen := m.running[k]; !seen || !slices.Equal(prev.targets, r.targets) {
+			m.log.Info("application detected", "app", name, "pid", r.proc.PID,
+				"ppid", r.proc.PPID, "path", r.proc.Path, "allowed", !deny[k])
+		}
+		if deny[k] && !m.terminating[k] {
 			m.terminating[k] = true
-			toKill = append(toKill, p)
+			toKill = append(toKill, r.proc)
+			names[r.proc.PID] = name
 		}
 	}
 	for k := range m.terminating {
@@ -138,30 +228,31 @@ func (m *Monitor) scan(ctx context.Context) {
 		}
 	}
 	m.running = current
+	timeout := m.termTimeout
 	m.mu.Unlock()
 
 	if len(toKill) > 0 {
-		go m.terminate(ctx, toKill)
+		go m.terminate(ctx, toKill, names, timeout)
 	}
 }
 
-func (m *Monitor) terminate(ctx context.Context, procs []Proc) {
+func (m *Monitor) terminate(ctx context.Context, procs []Proc, names map[int]string, timeout time.Duration) {
 	for _, p := range procs {
-		m.o.Log.Warn("terminating application", "pid", p.PID, "path", p.Path)
+		m.log.Warn("terminating application", "app", names[p.PID], "pid", p.PID, "path", p.Path)
 	}
-	results := m.o.Killer.Terminate(ctx, procs, m.o.TerminateTimeout)
+	results := m.killer.Terminate(ctx, procs, timeout)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, r := range results {
+		app := names[r.Proc.PID]
 		if r.Err != nil {
-			m.o.Log.Error("failed to terminate application", "pid", r.Proc.PID, "err", r.Err)
-			// Allow a retry on the next scan.
-			delete(m.terminating, r.Proc.Key())
+			m.log.Error("failed to terminate application", "app", app, "pid", r.Proc.PID, "err", r.Err)
+			delete(m.terminating, r.Proc.Key()) // retry on the next scan
 			continue
 		}
 		if r.Forced {
-			m.o.Log.Warn("SIGKILL required", "pid", r.Proc.PID)
+			m.log.Warn("SIGKILL required", "app", app, "pid", r.Proc.PID)
 		}
-		m.o.Log.Info("application terminated", "pid", r.Proc.PID, "forced", r.Forced)
+		m.log.Info("application terminated", "app", app, "pid", r.Proc.PID, "forced", r.Forced)
 	}
 }

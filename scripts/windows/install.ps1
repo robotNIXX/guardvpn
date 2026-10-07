@@ -6,7 +6,11 @@
   powershell -ExecutionPolicy Bypass -File install.ps1 -Config .\config.json
 
 .PARAMETER Binary
-  Path to vpn-guard.exe (default: next to this script, or bin\windows-amd64).
+  Path to vpn-guard.exe (default: next to this script, or bin\windows-<arch>).
+.PARAMETER Agent
+  Path to vpn-guard-agent.exe, the tray/settings app (default: next to vpn-guard.exe).
+.PARAMETER NoAgent
+  Do not install the tray/settings app.
 .PARAMETER Config
   Config to install when none exists yet (default: config.json, else config.example.json).
 .PARAMETER ForceConfig
@@ -16,8 +20,10 @@
 [CmdletBinding()]
 param(
     [string]$Binary = "",
+    [string]$Agent = "",
     [string]$Config = "",
-    [switch]$ForceConfig
+    [switch]$ForceConfig,
+    [switch]$NoAgent
 )
 $ErrorActionPreference = 'Stop'
 
@@ -26,7 +32,10 @@ $InstallDir  = Join-Path $env:ProgramFiles 'VPNGuard'
 $DataDir     = Join-Path $env:ProgramData 'VPNGuard'
 $LogDir      = Join-Path $DataDir 'logs'
 $ExePath     = Join-Path $InstallDir 'vpn-guard.exe'
+$AgentPath   = Join-Path $InstallDir 'vpn-guard-agent.exe'
 $CfgPath     = Join-Path $DataDir 'config.json'
+$RunKey      = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run'
+$Shortcut    = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\VPN Guard.lnk'
 $Root        = Resolve-Path (Join-Path $PSScriptRoot '..\..') -ErrorAction SilentlyContinue
 
 # Well-known SIDs (locale independent)
@@ -50,6 +59,10 @@ if (-not $Binary) {
     $Binary = First-Existing @((Join-Path $PSScriptRoot 'vpn-guard.exe'), "$Root\bin\windows-$arch\vpn-guard.exe")
     if (-not $Binary) { throw 'vpn-guard.exe not found; pass -Binary.' }
 }
+if (-not $NoAgent -and -not $Agent) {
+    $Agent = First-Existing @((Join-Path (Split-Path $Binary) 'vpn-guard-agent.exe'), "$Root\bin\windows-$arch\vpn-guard-agent.exe")
+    if (-not $Agent) { throw 'vpn-guard-agent.exe not found; pass -Agent or -NoAgent.' }
+}
 if (-not $Config) {
     $Config = First-Existing @((Join-Path $PSScriptRoot 'config.json'), "$Root\config.json",
                                (Join-Path $PSScriptRoot 'config.example.json'), "$Root\config.example.json")
@@ -62,10 +75,15 @@ if ($svc -and $svc.Status -ne 'Stopped') {
     $svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))
 }
 
-# 3. binary
+# 3. binaries (the running tray app must be closed to replace its exe)
+Get-Process -Name 'vpn-guard-agent' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Copy-Item -Path $Binary -Destination $ExePath -Force
 Unblock-File -Path $ExePath -ErrorAction SilentlyContinue
+if (-not $NoAgent) {
+    Copy-Item -Path $Agent -Destination $AgentPath -Force
+    Unblock-File -Path $AgentPath -ErrorAction SilentlyContinue
+}
 
 # 4. data directory, 5. config
 New-Item -ItemType Directory -Force -Path $DataDir, $LogDir | Out-Null
@@ -112,3 +130,19 @@ $svc.WaitForStatus('Running', [TimeSpan]::FromSeconds(15))
 Write-Host 'vpn-guard is running'
 Start-Sleep -Seconds 2
 & $ExePath status
+
+# 11. tray/settings app: start at every user logon, Start Menu shortcut
+if (-not $NoAgent) {
+    Set-ItemProperty -Path $RunKey -Name 'VPNGuardAgent' -Value "`"$AgentPath`""
+    $ws = New-Object -ComObject WScript.Shell
+    $lnk = $ws.CreateShortcut($Shortcut)
+    $lnk.TargetPath = $AgentPath
+    $lnk.Arguments = '-show'
+    $lnk.WorkingDirectory = $InstallDir
+    $lnk.Description = 'VPN Guard status and settings'
+    $lnk.Save()
+    # Start it now for the current user without elevation (explorer.exe
+    # launches programs with the user's normal token).
+    Start-Process -FilePath 'explorer.exe' -ArgumentList "`"$AgentPath`""
+    Write-Host "VPN Guard tray app installed: $AgentPath (starts at logon)"
+}

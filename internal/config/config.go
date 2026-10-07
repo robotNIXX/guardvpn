@@ -36,8 +36,15 @@ const (
 
 // Config is the on-disk configuration.
 type Config struct {
-	Application      Application `json:"application"`
-	AllowedCountries []string    `json:"allowed_countries"`
+	// Applications are the controlled applications.
+	Applications []App `json:"applications"`
+	// Application is the single-app format of V1.0, accepted on load and
+	// converted into Applications.
+	Application *Application `json:"application,omitempty"`
+
+	// AllowedCountries is the default list for applications that do not
+	// define their own.
+	AllowedCountries []string `json:"allowed_countries"`
 
 	ProcessCheckIntervalMs      int `json:"process_check_interval_ms"`
 	NetworkCheckIntervalSeconds int `json:"network_check_interval_seconds"`
@@ -50,8 +57,19 @@ type Config struct {
 	Logging Logging `json:"logging"`
 }
 
-// Application holds per-platform identification of the controlled app.
-// One file is shared by both platforms; each OS reads its own section.
+// App is one controlled application. One file is shared by both
+// platforms; each OS reads its own section and ignores apps without one.
+type App struct {
+	Name string `json:"name"`
+	// Disabled apps are not controlled (they may run freely).
+	Disabled bool `json:"disabled,omitempty"`
+	// AllowedCountries overrides Config.AllowedCountries for this app.
+	AllowedCountries []string    `json:"allowed_countries,omitempty"`
+	Darwin           *DarwinApp  `json:"darwin,omitempty"`
+	Windows          *WindowsApp `json:"windows,omitempty"`
+}
+
+// Application is the V1.0 per-platform section (legacy format).
 type Application struct {
 	Darwin  *DarwinApp  `json:"darwin,omitempty"`
 	Windows *WindowsApp `json:"windows,omitempty"`
@@ -109,6 +127,7 @@ func (e *ValidationError) Error() string {
 }
 
 // Load reads, parses, applies defaults and validates the config.
+// Per-application problems are reported separately by AppProblems.
 //
 // When the file parses but fails validation, the parsed *Config is returned
 // together with a *ValidationError so the daemon can still use whatever is
@@ -157,9 +176,105 @@ func (c *Config) applyDefaults() {
 	if len(c.GeoIP.Providers) == 0 {
 		c.GeoIP.Providers = []Provider{{Type: ProviderCloudflareTrace}}
 	}
-	for i, cc := range c.AllowedCountries {
-		c.AllowedCountries[i] = strings.ToUpper(strings.TrimSpace(cc))
+	normCountries(c.AllowedCountries)
+
+	// Convert the V1.0 single-application format.
+	if c.Application != nil {
+		if len(c.Applications) == 0 && (c.Application.Darwin != nil || c.Application.Windows != nil) {
+			c.Applications = []App{{
+				Name:    legacyName(c.Application),
+				Darwin:  c.Application.Darwin,
+				Windows: c.Application.Windows,
+			}}
+		}
+		c.Application = nil
 	}
+	for i := range c.Applications {
+		a := &c.Applications[i]
+		a.Name = strings.TrimSpace(a.Name)
+		normCountries(a.AllowedCountries)
+	}
+}
+
+func normCountries(cs []string) {
+	for i, cc := range cs {
+		cs[i] = strings.ToUpper(strings.TrimSpace(cc))
+	}
+}
+
+func legacyName(a *Application) string {
+	base := func(p string) string {
+		p = strings.TrimRight(strings.ReplaceAll(p, "\\", "/"), "/")
+		if i := strings.LastIndexByte(p, '/'); i >= 0 {
+			p = p[i+1:]
+		}
+		return strings.TrimSuffix(strings.TrimSuffix(p, ".app"), ".exe")
+	}
+	if a.Darwin != nil && a.Darwin.Path != "" {
+		return base(a.Darwin.Path)
+	}
+	if a.Windows != nil && a.Windows.Path != "" {
+		return base(a.Windows.Path)
+	}
+	return "Application"
+}
+
+// CountriesFor returns the effective allowed countries of an application.
+func (c *Config) CountriesFor(a App) []string {
+	if len(a.AllowedCountries) > 0 {
+		return a.AllowedCountries
+	}
+	return c.AllowedCountries
+}
+
+// Enabled returns the applications controlled on this platform.
+func (c *Config) Enabled() []App {
+	var out []App
+	for _, a := range c.Applications {
+		if !a.Disabled && a.Current() != nil {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// AllCountries returns the union of the allowed countries of every
+// enabled application (the default list when there is none).
+func (c *Config) AllCountries() []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(cs []string) {
+		for _, cc := range cs {
+			if !seen[cc] {
+				seen[cc] = true
+				out = append(out, cc)
+			}
+		}
+	}
+	enabled := c.Enabled()
+	if len(enabled) == 0 {
+		add(c.AllowedCountries)
+	}
+	for _, a := range enabled {
+		add(c.CountriesFor(a))
+	}
+	return out
+}
+
+// AppProblems checks each application's section for the current platform
+// (bundle/exe exists etc.). Problems are per application and do not make
+// the whole configuration invalid: the affected app simply stays blocked.
+func (c *Config) AppProblems() map[string]error {
+	out := map[string]error{}
+	for _, a := range c.Applications {
+		if a.Disabled || a.Current() == nil {
+			continue
+		}
+		if err := validateCurrent(a); err != nil {
+			out[a.Name] = err
+		}
+	}
+	return out
 }
 
 var countryRe = regexp.MustCompile(`^[A-Z]{2}$`)
@@ -169,8 +284,23 @@ func (c *Config) Validate() error {
 	var p []string
 	add := func(format string, args ...any) { p = append(p, fmt.Sprintf(format, args...)) }
 
-	if err := validateApplication(c.Application); err != nil {
-		add("%v", err)
+	names := map[string]bool{}
+	for i, a := range c.Applications {
+		switch {
+		case a.Name == "":
+			add("applications[%d]: name is required", i)
+		case names[strings.ToLower(a.Name)]:
+			add("applications: duplicate name %q", a.Name)
+		}
+		names[strings.ToLower(a.Name)] = true
+		if a.Darwin == nil && a.Windows == nil {
+			add("applications[%d] %q: needs a darwin or windows section", i, a.Name)
+		}
+		for _, cc := range a.AllowedCountries {
+			if !countryRe.MatchString(cc) {
+				add("applications[%d] %q: %q is not an ISO 3166-1 alpha-2 code", i, a.Name, cc)
+			}
+		}
 	}
 
 	if len(c.AllowedCountries) == 0 {

@@ -46,6 +46,7 @@ type NetworkState struct {
 	IPv4      string    `json:"ipv4,omitempty"`
 	IPv6      string    `json:"ipv6,omitempty"`
 	Country   string    `json:"country,omitempty"`
+	Countries []string  `json:"countries,omitempty"`
 	Provider  string    `json:"provider,omitempty"`
 	Reason    string    `json:"reason,omitempty"`
 	CheckedAt time.Time `json:"checked_at"`
@@ -54,14 +55,20 @@ type NetworkState struct {
 // Result is the outcome of one network check. State must be one of
 // StateAllowed, StateBlocked or StateUnknown.
 type Result struct {
-	State    State
-	IPv4     string
-	IPv6     string
-	Country  string
-	Provider string
+	State   State
+	IPv4    string
+	IPv6    string
+	Country string
+	// Countries lists the verified country of every checked address
+	// family. It is set for ALLOWED and BLOCKED results.
+	Countries []string
+	Provider  string
 	// Reason is a short human-readable explanation for BLOCKED/UNKNOWN.
 	Reason string
 }
+
+// Verified reports whether the state is backed by a successful check.
+func (s State) Verified() bool { return s == StateAllowed || s == StateBlocked }
 
 // Checker performs one external IP / country verification.
 // Implementations must honour ctx and never return StateAllowed on error.

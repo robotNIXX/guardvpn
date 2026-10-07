@@ -20,9 +20,10 @@ static void vg_cfstr(CFTypeRef v, char *out, int outlen) {
 }
 
 // Parses an Info.plist (XML or binary) and extracts identifier and executable.
-static int vg_plist_info(const void *data, long len, char *bid, int bidlen, char *exe, int exelen) {
+static int vg_plist_info(const void *data, long len, char *bid, int bidlen, char *exe, int exelen, char *name, int namelen) {
 	bid[0] = 0;
 	exe[0] = 0;
+	name[0] = 0;
 	CFDataRef d = CFDataCreate(NULL, (const UInt8 *)data, (CFIndex)len);
 	if (d == NULL) return -1;
 	CFPropertyListRef pl = CFPropertyListCreateWithData(NULL, d, kCFPropertyListImmutable, NULL, NULL);
@@ -34,6 +35,10 @@ static int vg_plist_info(const void *data, long len, char *bid, int bidlen, char
 	}
 	vg_cfstr(CFDictionaryGetValue((CFDictionaryRef)pl, CFSTR("CFBundleIdentifier")), bid, bidlen);
 	vg_cfstr(CFDictionaryGetValue((CFDictionaryRef)pl, CFSTR("CFBundleExecutable")), exe, exelen);
+	vg_cfstr(CFDictionaryGetValue((CFDictionaryRef)pl, CFSTR("CFBundleDisplayName")), name, namelen);
+	if (name[0] == 0) {
+		vg_cfstr(CFDictionaryGetValue((CFDictionaryRef)pl, CFSTR("CFBundleName")), name, namelen);
+	}
 	CFRelease(pl);
 	return 0;
 }
@@ -80,22 +85,29 @@ func pidPath(pid int) string {
 
 // bundleInfo reads <bundle>/Contents/Info.plist.
 func bundleInfo(bundle string) (id, exe string, err error) {
+	id, exe, _, err = bundlePlist(bundle)
+	return id, exe, err
+}
+
+func bundlePlist(bundle string) (id, exe, name string, err error) {
 	data, err := os.ReadFile(bundle + "/Contents/Info.plist")
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if len(data) == 0 {
-		return "", "", fmt.Errorf("empty Info.plist")
+		return "", "", "", fmt.Errorf("empty Info.plist")
 	}
 	bid := make([]byte, 512)
 	ex := make([]byte, 512)
+	nm := make([]byte, 512)
 	rc := C.vg_plist_info(unsafe.Pointer(&data[0]), C.long(len(data)),
 		(*C.char)(unsafe.Pointer(&bid[0])), C.int(len(bid)),
-		(*C.char)(unsafe.Pointer(&ex[0])), C.int(len(ex)))
+		(*C.char)(unsafe.Pointer(&ex[0])), C.int(len(ex)),
+		(*C.char)(unsafe.Pointer(&nm[0])), C.int(len(nm)))
 	if rc != 0 {
-		return "", "", fmt.Errorf("parse Info.plist: code %d", int(rc))
+		return "", "", "", fmt.Errorf("parse Info.plist: code %d", int(rc))
 	}
-	return cstr(bid), cstr(ex), nil
+	return cstr(bid), cstr(ex), cstr(nm), nil
 }
 
 // signingInfo returns the Team ID and signing identifier of a bundle or binary.

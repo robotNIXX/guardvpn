@@ -111,7 +111,8 @@ func TestMonitorKillsWhenNotAllowed(t *testing.T) {
 	k := &fakeKiller{lister: l}
 	pol := &flag{v: true}
 	changes := make(chan struct{}, 1)
-	m := NewMonitor(MonitorOptions{Lister: l, Identity: pathIdentity("target"), Killer: k, Policy: pol,
+	m := NewMonitor(MonitorOptions{Lister: l, Killer: k,
+		Targets:  []Target{{Name: "T", Identity: pathIdentity("target"), Policy: pol}},
 		Interval: time.Hour, TerminateTimeout: time.Second, Changes: changes})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -121,8 +122,8 @@ func TestMonitorKillsWhenNotAllowed(t *testing.T) {
 	if len(k.Killed()) != 0 {
 		t.Fatal("killed while allowed")
 	}
-	if !slices.Equal(m.TargetPIDs(), []int{42}) {
-		t.Fatalf("target pids %v", m.TargetPIDs())
+	if !slices.Equal(m.PIDs()["T"], []int{42}) {
+		t.Fatalf("target pids %v", m.PIDs())
 	}
 
 	pol.set(false)
@@ -141,7 +142,8 @@ func TestMonitorReevaluatesAfterExec(t *testing.T) {
 	// to the target with the same PID and start time.
 	l := &fakeLister{procs: []Proc{{PID: 42, PPID: 1, Start: 5, Path: "/bin/zsh"}}}
 	k := &fakeKiller{lister: l}
-	m := NewMonitor(MonitorOptions{Lister: l, Identity: pathIdentity("target"), Killer: k, Policy: &flag{},
+	m := NewMonitor(MonitorOptions{Lister: l, Killer: k,
+		Targets:  []Target{{Name: "T", Identity: pathIdentity("target"), Policy: &flag{}}},
 		Interval: time.Hour, TerminateTimeout: time.Second})
 	ctx := context.Background()
 	m.scan(ctx)
@@ -153,5 +155,37 @@ func TestMonitorReevaluatesAfterExec(t *testing.T) {
 	}
 	if !slices.Equal(k.Killed(), []int{42}) {
 		t.Fatalf("killed %v, want [42]", k.Killed())
+	}
+}
+
+func TestMonitorPerTargetPolicy(t *testing.T) {
+	l := &fakeLister{procs: []Proc{
+		{PID: 1, Start: 1, Path: "a"},
+		{PID: 2, Start: 1, Path: "b"},
+	}}
+	k := &fakeKiller{lister: &fakeLister{}}
+	m := NewMonitor(MonitorOptions{Lister: l, Killer: k, Interval: time.Hour, TerminateTimeout: time.Second,
+		Targets: []Target{
+			{Name: "A", Identity: pathIdentity("a"), Policy: &flag{v: true}},
+			{Name: "B", Identity: pathIdentity("b"), Policy: &flag{v: false}},
+		}})
+	m.scan(context.Background())
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && len(k.Killed()) == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !slices.Equal(k.Killed(), []int{2}) {
+		t.Fatalf("killed %v, want only B's process [2]", k.Killed())
+	}
+
+	// Hot reload: A becomes forbidden.
+	m.SetTargets([]Target{{Name: "A", Identity: pathIdentity("a"), Policy: &flag{v: false}}})
+	m.scan(context.Background())
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && len(k.Killed()) < 2 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !slices.Equal(k.Killed(), []int{2, 1}) {
+		t.Fatalf("killed %v after reload", k.Killed())
 	}
 }

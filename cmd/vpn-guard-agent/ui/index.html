@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VPN Guard</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="layout">
+  <nav class="sidebar">
+    <div class="brand">
+      <svg class="brand-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3Z"/></svg>
+      <div>
+        <div class="brand-name">VPN Guard</div>
+        <div class="brand-sub" id="brand-sub">—</div>
+      </div>
+    </div>
+    <button class="nav-item active" data-page="status">Статус</button>
+    <button class="nav-item" data-page="apps">Приложения</button>
+    <button class="nav-item" data-page="network">Сеть и GeoIP</button>
+    <button class="nav-item" data-page="advanced">Дополнительно</button>
+    <div class="sidebar-foot">
+      <div id="who" class="muted small"></div>
+    </div>
+  </nav>
+
+  <main class="content">
+    <div id="banners"></div>
+
+    <!-- Status -->
+    <section class="page" id="page-status">
+      <header class="page-head">
+        <h1>Статус</h1>
+        <button class="btn" id="btn-check">Проверить сейчас</button>
+      </header>
+      <div class="hero" id="hero">
+        <div class="hero-dot" id="hero-dot"></div>
+        <div class="hero-main">
+          <div class="hero-state" id="hero-state">—</div>
+          <div class="hero-reason muted" id="hero-reason"></div>
+        </div>
+      </div>
+      <dl class="facts" id="facts"></dl>
+      <h2>Приложения</h2>
+      <div class="table" id="status-apps"></div>
+    </section>
+
+    <!-- Applications -->
+    <section class="page hidden" id="page-apps">
+      <header class="page-head">
+        <h1>Приложения</h1>
+        <button class="btn primary" id="btn-add-app" data-edit>Добавить приложение…</button>
+      </header>
+      <p class="muted">Включённые приложения работают только тогда, когда внешний IP относится к разрешённой стране. Выключенные не контролируются.</p>
+      <div class="manual hidden" id="manual-add">
+        <input type="text" id="manual-path" placeholder="/Applications/Target.app или C:\Program Files\Target\Target.exe" data-edit>
+        <button class="btn" id="btn-manual-add" data-edit>Добавить</button>
+      </div>
+      <div id="apps-list"></div>
+    </section>
+
+    <!-- Network -->
+    <section class="page hidden" id="page-network">
+      <header class="page-head"><h1>Сеть и GeoIP</h1></header>
+      <div class="card">
+        <h3>Разрешённые страны по умолчанию</h3>
+        <p class="muted small">Используются приложениями без собственного списка.</p>
+        <div class="chips" id="default-countries"></div>
+      </div>
+      <div class="card">
+        <h3>Сервисы определения страны</h3>
+        <label class="row check">
+          <input type="checkbox" id="p-ipinfo" data-edit>
+          <span><b>IPinfo Lite</b> — основной, без лимита запросов, нужен бесплатный токен</span>
+        </label>
+        <div class="row indent">
+          <input type="password" id="p-ipinfo-token" placeholder="Токен IPinfo" autocomplete="off">
+        </div>
+        <label class="row check">
+          <input type="checkbox" id="p-cloudflare" data-edit>
+          <span><b>Cloudflare</b> (1.1.1.1/cdn-cgi/trace) — без токена, запасной</span>
+        </label>
+        <div class="grid2">
+          <label class="field">Политика
+            <select id="geo-policy" data-edit>
+              <option value="first_success">Первый успешный ответ</option>
+              <option value="all_agree">Все сервисы должны совпасть</option>
+            </select>
+          </label>
+          <label class="field">IPv6
+            <select id="geo-ipv6" data-edit>
+              <option value="auto">Проверять, если есть глобальный IPv6</option>
+              <option value="required">Проверять всегда</option>
+              <option value="disabled">Не проверять</option>
+            </select>
+          </label>
+        </div>
+      </div>
+    </section>
+
+    <!-- Advanced -->
+    <section class="page hidden" id="page-advanced">
+      <header class="page-head"><h1>Дополнительно</h1></header>
+      <div class="card">
+        <h3>Интервалы</h3>
+        <div class="grid2" id="intervals"></div>
+      </div>
+      <div class="card">
+        <h3>Журнал</h3>
+        <div class="grid2">
+          <label class="field">Уровень
+            <select id="log-level" data-edit>
+              <option value="debug">debug</option>
+              <option value="info">info</option>
+              <option value="warn">warn</option>
+              <option value="error">error</option>
+            </select>
+          </label>
+        </div>
+        <div class="row gap">
+          <button class="btn" id="btn-logs">Открыть журнал</button>
+          <button class="btn" id="btn-reload" data-edit>Перечитать конфигурацию</button>
+        </div>
+        <p class="muted small" id="config-path"></p>
+      </div>
+    </section>
+
+    <div class="savebar hidden" id="savebar">
+      <div id="save-msg">Есть несохранённые изменения</div>
+      <div class="row gap">
+        <button class="btn" id="btn-revert">Отменить</button>
+        <button class="btn primary" id="btn-save">Сохранить и применить</button>
+      </div>
+    </div>
+    <div class="toast hidden" id="toast"></div>
+
+    <div class="modal-back hidden" id="picker">
+      <div class="modal" role="dialog" aria-label="Выбор приложения">
+        <div class="modal-head">
+          <h3>Выберите приложение</h3>
+          <button class="btn small" id="picker-close">Закрыть</button>
+        </div>
+        <input type="text" id="picker-search" placeholder="Поиск по названию или bundle ID">
+        <div class="picker-list" id="picker-list"></div>
+        <div class="modal-foot">
+          <span class="muted small">Нет в списке?</span>
+          <button class="btn" id="picker-file">Выбрать файл…</button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

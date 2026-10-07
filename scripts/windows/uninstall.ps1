@@ -13,6 +13,10 @@ $ServiceName = 'VPNGuard'
 $InstallDir  = Join-Path $env:ProgramFiles 'VPNGuard'
 $DataDir     = Join-Path $env:ProgramData 'VPNGuard'
 
+Get-Process -Name 'vpn-guard-agent' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'VPNGuardAgent' -ErrorAction SilentlyContinue
+Remove-Item -Path (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\VPN Guard.lnk') -ErrorAction SilentlyContinue
+
 $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($svc) {
     if ($svc.Status -ne 'Stopped') {

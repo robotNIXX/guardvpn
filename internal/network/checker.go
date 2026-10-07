@@ -59,7 +59,7 @@ func NewCheckerFromConfig(cfg *config.Config, log *logging.Logger) (*Checker, er
 		Providers: ps,
 		Policy:    cfg.GeoIP.Policy,
 		IPv6Mode:  cfg.GeoIP.IPv6,
-		Allowed:   cfg.AllowedCountries,
+		Allowed:   cfg.AllCountries(),
 		Timeout:   cfg.NetworkTimeout(),
 		Log:       log,
 	}), nil
@@ -182,14 +182,19 @@ func (c *Checker) combine(results []famResult) guard.Result {
 		}
 	}
 	out.Country = strings.Join(countries, "/")
+	out.Countries = countries
 
 	switch {
+	case len(unknown) > 0:
+		// Unverified families make the whole result UNKNOWN, even if
+		// another family is already known to be blocked: callers may
+		// re-judge verified countries against other lists.
+		out.State = guard.StateUnknown
+		out.Reason = strings.Join(append(blocked, unknown...), "; ")
+		out.Countries = nil
 	case len(blocked) > 0:
 		out.State = guard.StateBlocked
-		out.Reason = strings.Join(append(blocked, unknown...), "; ")
-	case len(unknown) > 0:
-		out.State = guard.StateUnknown
-		out.Reason = strings.Join(unknown, "; ")
+		out.Reason = strings.Join(blocked, "; ")
 	case out.IPv4 == "" && out.IPv6 == "":
 		out.State = guard.StateUnknown
 		out.Reason = "no address family could be verified"

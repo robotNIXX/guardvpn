@@ -1,15 +1,30 @@
 {
-  "application": {
-    "darwin": {
-      "path": "/Applications/Target.app",
-      "bundle_id": "com.vendor.target",
-      "team_id": ""
+  "applications": [
+    {
+      "name": "Target",
+      "darwin": {
+        "path": "/Applications/Target.app",
+        "bundle_id": "com.vendor.target"
+      },
+      "windows": {
+        "path": "C:\\Program Files\\Target\\Target.exe"
+      }
     },
-    "windows": {
-      "path": "C:\\Program Files\\Target\\Target.exe",
-      "publisher": ""
+    {
+      "name": "Another App",
+      "allowed_countries": ["TH", "SG"],
+      "disabled": true,
+      "darwin": {
+        "path": "/Applications/Another.app",
+        "bundle_id": "com.vendor.another",
+        "team_id": "ABCDE12345"
+      },
+      "windows": {
+        "path": "C:\\Program Files\\Another\\Another.exe",
+        "publisher": "Vendor Ltd"
+      }
     }
-  },
+  ],
 
   "allowed_countries": ["TH"],
 

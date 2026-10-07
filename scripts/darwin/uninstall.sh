@@ -14,6 +14,11 @@ PURGE=0
 [ "$(id -u)" -eq 0 ] || { echo "run as root: sudo $0" >&2; exit 1; }
 
 launchctl bootout "system/$LABEL" 2>/dev/null || true
+CONSOLE_UID=$(stat -f %u /dev/console 2>/dev/null || echo 0)
+[ "$CONSOLE_UID" -ne 0 ] && launchctl bootout "gui/$CONSOLE_UID/com.vpnguard.agent" 2>/dev/null || true
+pkill -x vpn-guard-agent 2>/dev/null || true
+rm -f /Library/LaunchAgents/com.vpnguard.agent.plist
+rm -rf "/Applications/VPN Guard.app"
 rm -f "/Library/LaunchDaemons/$LABEL.plist"
 rm -f /usr/local/bin/vpn-guard
 rm -f /var/run/vpn-guard.sock

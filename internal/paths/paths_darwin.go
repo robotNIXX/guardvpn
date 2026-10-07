@@ -16,7 +16,6 @@ func defaults() Defaults {
 		Config:     "/etc/vpn-guard/config.json",
 		LogFile:    "/var/log/vpn-guard.log",
 		ErrorLog:   "/var/log/vpn-guard-error.log",
-		IPCNetwork: "unix",
 		IPCAddress: "/var/run/vpn-guard.sock",
 	}
 }

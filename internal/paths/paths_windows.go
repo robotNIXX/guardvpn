@@ -27,7 +27,6 @@ func defaults() Defaults {
 		Config:     filepath.Join(base, "config.json"),
 		LogFile:    filepath.Join(base, "logs", "vpn-guard.log"),
 		ErrorLog:   filepath.Join(base, "logs", "vpn-guard-error.log"),
-		IPCNetwork: "tcp",
-		IPCAddress: "127.0.0.1:47290",
+		IPCAddress: `\\.\pipe\vpn-guard`,
 	}
 }

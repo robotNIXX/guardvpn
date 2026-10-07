@@ -1,10 +1,11 @@
 #!/bin/sh
 # VPN Guard installer for macOS.
 #
-#   sudo ./install.sh [--binary PATH] [--config PATH] [--force-config]
+#   sudo ./install.sh [--binary PATH] [--app PATH] [--config PATH] [--force-config] [--no-agent]
 #
-# Defaults: binary ./vpn-guard (or bin/darwin/vpn-guard from a source tree),
-# config ./config.json, else config.example.json. An existing
+# Installs the root daemon and the "VPN Guard" menu bar app (settings UI).
+# Defaults: ./vpn-guard and "./VPN Guard.app" (or bin/darwin/ from a source
+# tree), config ./config.json, else config.example.json. An existing
 # /etc/vpn-guard/config.json is kept unless --force-config is given.
 set -eu
 
@@ -13,6 +14,9 @@ BIN_DST="/usr/local/bin/vpn-guard"
 CFG_DIR="/etc/vpn-guard"
 CFG_DST="$CFG_DIR/config.json"
 PLIST_DST="/Library/LaunchDaemons/$LABEL.plist"
+AGENT_LABEL="com.vpnguard.agent"
+AGENT_PLIST_DST="/Library/LaunchAgents/$AGENT_LABEL.plist"
+APP_DST="/Applications/VPN Guard.app"
 LOG="/var/log/vpn-guard.log"
 ERRLOG="/var/log/vpn-guard-error.log"
 
@@ -20,14 +24,18 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." 2>/dev/null && pwd || echo "$HERE")
 
 BINARY=""
+APP=""
 CONFIG=""
 FORCE_CONFIG=0
+AGENT=1
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--binary) BINARY="$2"; shift 2 ;;
+	--app) APP="$2"; shift 2 ;;
+	--no-agent) AGENT=0; shift ;;
 	--config) CONFIG="$2"; shift 2 ;;
 	--force-config) FORCE_CONFIG=1; shift ;;
-	-h|--help) sed -n '2,9p' "$0"; exit 0 ;;
+	-h|--help) sed -n '2,10p' "$0"; exit 0 ;;
 	*) echo "unknown option: $1" >&2; exit 2 ;;
 	esac
 done
@@ -43,6 +51,15 @@ first() { for f in "$@"; do [ -f "$f" ] && { echo "$f"; return 0; }; done; retur
 [ -n "$BINARY" ] || BINARY=$(first "$HERE/vpn-guard" "$ROOT/bin/darwin/vpn-guard") || die "binary not found; build with 'make darwin' or pass --binary"
 [ -n "$CONFIG" ] || CONFIG=$(first "$HERE/config.json" "$ROOT/config.json" "$HERE/config.example.json" "$ROOT/config.example.json") || true
 PLIST_SRC=$(first "$HERE/$LABEL.plist" "$ROOT/deploy/darwin/$LABEL.plist") || die "$LABEL.plist not found"
+if [ "$AGENT" -eq 1 ]; then
+	if [ -z "$APP" ]; then
+		for d in "$HERE/VPN Guard.app" "$ROOT/bin/darwin/VPN Guard.app"; do
+			[ -d "$d" ] && { APP="$d"; break; }
+		done
+	fi
+	[ -n "$APP" ] && [ -d "$APP" ] || die "VPN Guard.app not found; build with 'make darwin', pass --app or use --no-agent"
+	AGENT_PLIST_SRC=$(first "$HERE/$AGENT_LABEL.plist" "$ROOT/deploy/darwin/$AGENT_LABEL.plist") || die "$AGENT_LABEL.plist not found"
+fi
 
 # Stop a running instance before replacing the binary.
 launchctl bootout "system/$LABEL" 2>/dev/null || true
@@ -92,3 +109,22 @@ else
 	die "vpn-guard did not start; see $ERRLOG"
 fi
 "$BIN_DST" status || true
+
+# 11. menu bar app (settings UI), started at every user login
+if [ "$AGENT" -eq 1 ]; then
+	CONSOLE_UID=$(stat -f %u /dev/console 2>/dev/null || echo 0)
+	if [ "$CONSOLE_UID" -ne 0 ]; then
+		launchctl bootout "gui/$CONSOLE_UID/$AGENT_LABEL" 2>/dev/null || true
+	fi
+	rm -rf "$APP_DST"
+	ditto "$APP" "$APP_DST"
+	chown -R root:wheel "$APP_DST"
+	chmod -R go-w "$APP_DST"
+	xattr -dr com.apple.quarantine "$APP_DST" 2>/dev/null || true
+	install -o root -g wheel -m 0644 "$AGENT_PLIST_SRC" "$AGENT_PLIST_DST"
+	if [ "$CONSOLE_UID" -ne 0 ]; then
+		launchctl bootstrap "gui/$CONSOLE_UID" "$AGENT_PLIST_DST" 2>/dev/null || true
+		echo "VPN Guard menu bar app started for uid $CONSOLE_UID"
+	fi
+	echo "VPN Guard menu bar app installed: $APP_DST (starts at login)"
+fi

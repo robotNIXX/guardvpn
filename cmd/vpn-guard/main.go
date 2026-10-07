@@ -32,6 +32,7 @@ Usage:
   vpn-guard run      [-config PATH] [-console]   run the daemon (launchd / Windows service)
   vpn-guard status   [-json]                     show daemon state
   vpn-guard check    [-local] [-config PATH]     force a network check
+  vpn-guard reload                               re-read the configuration (administrators)
   vpn-guard validate [-config PATH]              validate the configuration
   vpn-guard version
 `
@@ -52,6 +53,8 @@ func main() {
 		code = cmdCheck(args)
 	case "validate":
 		code = cmdValidate(args)
+	case "reload":
+		code = cmdReload()
 	case "version", "-v", "--version":
 		fmt.Printf("vpn-guard %s (%s)\n", version.Version, version.Commit)
 	case "help", "-h", "--help":
@@ -125,10 +128,6 @@ func printStatus(w io.Writer, st *ipc.Status) {
 			fmt.Fprintf(w, "%-14s %s\n", k+":", v)
 		}
 	}
-	for _, f := range st.Application {
-		row(f.Name, f.Value)
-	}
-	fmt.Fprintln(w)
 	row("State", st.State)
 	if st.State != guard.StateAllowed.String() {
 		row("Reason", st.Reason)
@@ -137,20 +136,50 @@ func printStatus(w io.Writer, st *ipc.Status) {
 	row("External IP", st.IPv4)
 	row("External IPv6", st.IPv6)
 	row("Country", st.Country)
-	row("Required", strings.Join(st.Required, ", "))
 	row("Provider", st.Provider)
 	if !st.CheckedAt.IsZero() {
 		row("Last check", st.CheckedAt.Local().Format("2006-01-02 15:04:05"))
 	}
-	pids := make([]string, len(st.TargetPIDs))
-	for i, p := range st.TargetPIDs {
-		pids[i] = strconv.Itoa(p)
+	row("Config", st.ConfigPath)
+
+	if len(st.Apps) == 0 {
+		fmt.Fprintln(w, "\nNo applications are controlled.")
+		return
 	}
-	if len(pids) == 0 {
-		row("Target PID", "not running")
-	} else {
-		row("Target PID", strings.Join(pids, ", "))
+	for _, a := range st.Apps {
+		fmt.Fprintf(w, "\n[%s]\n", a.Name)
+		row("  State", a.State)
+		row("  Required", strings.Join(a.Allowed, ", "))
+		row("  Error", a.Error)
+		for _, f := range a.Identity {
+			row("  "+f.Name, f.Value)
+		}
+		if !a.Disabled {
+			pids := make([]string, len(a.PIDs))
+			for i, p := range a.PIDs {
+				pids[i] = strconv.Itoa(p)
+			}
+			if len(pids) == 0 {
+				row("  PID", "not running")
+			} else {
+				row("  PID", strings.Join(pids, ", "))
+			}
+		}
 	}
+}
+
+func cmdReload() int {
+	st, err := ipc.Call(ipc.CmdReload, 20*time.Second)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "reload failed:", err)
+		if st != nil && st.ConfigError != "" {
+			fmt.Fprintln(os.Stderr, st.ConfigError)
+		}
+		return 1
+	}
+	fmt.Println("configuration reloaded")
+	printStatus(os.Stdout, st)
+	return 0
 }
 
 func cmdCheck(args []string) int {
@@ -193,7 +222,7 @@ func cmdCheck(args []string) int {
 		defer cancel()
 		r := checker.Check(ctx)
 		st = &ipc.Status{State: r.State.String(), Reason: r.Reason, IPv4: r.IPv4, IPv6: r.IPv6,
-			Country: r.Country, Provider: r.Provider, Required: cfg.AllowedCountries}
+			Country: r.Country, Provider: r.Provider}
 	}
 
 	row := func(k, v string) {
@@ -204,13 +233,19 @@ func cmdCheck(args []string) int {
 	row("External IP", st.IPv4)
 	row("External IPv6", st.IPv6)
 	row("Country", st.Country)
-	row("Required", strings.Join(st.Required, ", "))
 	row("Provider", st.Provider)
 	fmt.Println()
 	fmt.Printf("Result: %s\n", st.State)
 	if st.State != guard.StateAllowed.String() {
 		row("Reason", st.Reason)
 		row("Config error", st.ConfigError)
+	}
+	for _, a := range st.Apps {
+		if !a.Disabled {
+			fmt.Printf("  %s: %s (required %s)\n", a.Name, a.State, strings.Join(a.Allowed, ", "))
+		}
+	}
+	if st.State != guard.StateAllowed.String() {
 		return 1
 	}
 	return 0
@@ -222,9 +257,6 @@ func cmdValidate(args []string) int {
 	_ = fs.Parse(args)
 
 	cfg, err := config.Load(*cfgPath)
-	if err == nil {
-		_, err = process.NewIdentity(cfg.Application.App())
-	}
 	if err != nil {
 		var ve *config.ValidationError
 		if errors.As(err, &ve) {
@@ -235,6 +267,32 @@ func cmdValidate(args []string) int {
 		} else {
 			fmt.Fprintln(os.Stderr, err)
 		}
+		return 1
+	}
+	bad := false
+	problems := cfg.AppProblems()
+	for _, a := range cfg.Applications {
+		switch {
+		case a.Disabled:
+			fmt.Printf("  %-20s disabled\n", a.Name)
+			continue
+		case a.Current() == nil:
+			fmt.Printf("  %-20s not configured for this platform\n", a.Name)
+			continue
+		}
+		err := problems[a.Name]
+		if err == nil {
+			_, err = process.NewIdentity(a.Current())
+		}
+		if err != nil {
+			bad = true
+			fmt.Printf("  %-20s ERROR: %v\n", a.Name, err)
+		} else {
+			fmt.Printf("  %-20s OK (allowed: %s)\n", a.Name, strings.Join(cfg.CountriesFor(a), ", "))
+		}
+	}
+	if bad {
+		fmt.Fprintln(os.Stderr, "some applications are misconfigured and will stay blocked")
 		return 1
 	}
 	fmt.Printf("configuration OK: %s\n", *cfgPath)

@@ -50,7 +50,11 @@ func (f *fakeChecker) Calls() int {
 	return f.calls
 }
 
-func allowed(ip string) Result { return Result{State: StateAllowed, IPv4: ip, Country: "TH"} }
+func allowed(ip string) Result {
+	return Result{State: StateAllowed, IPv4: ip, Country: "TH", Countries: []string{"TH"}}
+}
+
+var blockedDE = Result{State: StateBlocked, IPv4: "198.51.100.27", Country: "DE", Countries: []string{"DE"}}
 
 func newGuard(c Checker) *Guard {
 	return New(c, Options{Interval: time.Hour, UnknownRetry: time.Hour, Debounce: 20 * time.Millisecond, Required: []string{"TH"}})
@@ -99,7 +103,7 @@ func TestStartupCheckAllows(t *testing.T) {
 }
 
 func TestInvalidateLeavesAllowedImmediately(t *testing.T) {
-	fc := &fakeChecker{results: []Result{allowed("1.1.1.1"), {State: StateBlocked, Country: "DE"}}}
+	fc := &fakeChecker{results: []Result{allowed("1.1.1.1"), blockedDE}}
 	g := newGuard(fc)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -119,7 +123,7 @@ func TestInvalidateLeavesAllowedImmediately(t *testing.T) {
 func TestStaleResultDiscarded(t *testing.T) {
 	// A check that started before a network change must not produce ALLOWED.
 	fc := &fakeChecker{
-		results: []Result{allowed("1.1.1.1"), {State: StateBlocked, Country: "DE"}},
+		results: []Result{allowed("1.1.1.1"), blockedDE},
 		gate:    make(chan struct{}),
 		started: make(chan struct{}, 10),
 	}
@@ -164,7 +168,7 @@ func TestPeriodicCheckKeepsAllowed(t *testing.T) {
 }
 
 func TestPeriodicCheckCanBlock(t *testing.T) {
-	fc := &fakeChecker{results: []Result{allowed("1.1.1.1"), {State: StateBlocked, Country: "DE"}}}
+	fc := &fakeChecker{results: []Result{allowed("1.1.1.1"), blockedDE}}
 	g := newGuard(fc)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -176,7 +180,7 @@ func TestPeriodicCheckCanBlock(t *testing.T) {
 
 func TestDebounceCoalescesEvents(t *testing.T) {
 	fc := &fakeChecker{results: []Result{allowed("1.1.1.1")}}
-	g := New(fc, Options{Interval: time.Hour, UnknownRetry: time.Hour, Debounce: 100 * time.Millisecond})
+	g := New(fc, Options{Interval: time.Hour, UnknownRetry: time.Hour, Debounce: 100 * time.Millisecond, Required: []string{"TH"}})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go g.Run(ctx)
@@ -220,4 +224,57 @@ func TestCheckNowWaitsForFreshResult(t *testing.T) {
 	if st.IPv4 != "2.2.2.2" {
 		t.Fatalf("CheckNow returned %q, want result of a new check", st.IPv4)
 	}
+}
+
+func TestPermitsForPerApplication(t *testing.T) {
+	fc := &fakeChecker{results: []Result{{State: StateAllowed, Country: "SG", Countries: []string{"SG"}}}}
+	g := New(fc, Options{Interval: time.Hour, UnknownRetry: time.Hour, Required: []string{"TH", "SG"}})
+	if g.PermitsFor(map[string]bool{"SG": true}) {
+		t.Fatal("nothing may run before the first check")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go g.Run(ctx)
+	waitState(t, g, StateAllowed)
+	if !g.PermitsFor(map[string]bool{"SG": true}) {
+		t.Fatal("app allowed in SG must run")
+	}
+	if g.PermitsFor(map[string]bool{"TH": true}) {
+		t.Fatal("app allowed only in TH must not run in SG")
+	}
+	g.Invalidate("route")
+	if g.PermitsFor(map[string]bool{"SG": true}) {
+		t.Fatal("CHECKING must forbid every app")
+	}
+}
+
+func TestSetOptionsReevaluatesWithoutRecheck(t *testing.T) {
+	fc := &fakeChecker{results: []Result{allowed("1.1.1.1")}}
+	g := newGuard(fc)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go g.Run(ctx)
+	waitState(t, g, StateAllowed)
+	calls := fc.Calls()
+
+	g.SetOptions(Options{Interval: time.Hour, UnknownRetry: time.Hour, Required: []string{"SG"}})
+	if s := g.Snapshot().State; s != StateBlocked {
+		t.Fatalf("state = %v after removing TH, want BLOCKED", s)
+	}
+	g.SetOptions(Options{Interval: time.Hour, UnknownRetry: time.Hour, Required: []string{"TH"}})
+	if !g.Allowed() {
+		t.Fatal("re-adding TH must allow again without a new check")
+	}
+	if fc.Calls() != calls {
+		t.Fatal("changing allowed countries must not trigger a network check")
+	}
+}
+
+func TestResultWithoutCountriesIsUnknown(t *testing.T) {
+	fc := &fakeChecker{results: []Result{{State: StateAllowed, IPv4: "1.1.1.1"}}}
+	g := newGuard(fc)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go g.Run(ctx)
+	waitState(t, g, StateUnknown)
 }

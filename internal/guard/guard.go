@@ -19,7 +19,8 @@ type Options struct {
 	// burst of events (Wi-Fi + route + utun) produces a single request.
 	// The state is switched to CHECKING immediately, not after the debounce.
 	Debounce time.Duration
-	// Required is the list of allowed countries (for log messages).
+	// Required is the union of allowed countries of all applications: the
+	// guard reports ALLOWED when every verified country is in this list.
 	Required []string
 	Log      *logging.Logger
 }
@@ -39,6 +40,7 @@ type Guard struct {
 	log     *logging.Logger
 
 	mu             sync.Mutex
+	allowed        map[string]bool
 	st             NetworkState
 	gen            uint64 // bumped on every Invalidate
 	lastInvalidate time.Time
@@ -59,9 +61,74 @@ func New(checker Checker, opts Options) *Guard {
 		opts:    opts,
 		checker: checker,
 		log:     opts.Log,
+		allowed: toSet(opts.Required),
 		st:      NetworkState{State: StateInitializing},
 		doneCh:  make(chan struct{}),
 		poke:    make(chan struct{}, 1),
+	}
+}
+
+func toSet(cs []string) map[string]bool {
+	m := make(map[string]bool, len(cs))
+	for _, c := range cs {
+		m[c] = true
+	}
+	return m
+}
+
+func subset(cs []string, allowed map[string]bool) bool {
+	if len(cs) == 0 {
+		return false
+	}
+	for _, c := range cs {
+		if !allowed[c] {
+			return false
+		}
+	}
+	return true
+}
+
+// PermitsFor reports whether an application with the given allowed
+// countries may run: the network must be verified (not CHECKING/UNKNOWN)
+// and every verified country must be in allowed.
+func (g *Guard) PermitsFor(allowed map[string]bool) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.st.State.Verified() && subset(g.st.Countries, allowed)
+}
+
+// SetChecker replaces the checker used by subsequent checks. The current
+// state is kept: a different GeoIP provider does not mean a different
+// network.
+func (g *Guard) SetChecker(c Checker) {
+	g.mu.Lock()
+	g.checker = c
+	g.mu.Unlock()
+}
+
+// SetOptions updates timings and the allowed-country union. A verified
+// state is re-evaluated against the new union immediately.
+func (g *Guard) SetOptions(opts Options) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	opts.Log = g.log
+	g.opts = opts
+	g.allowed = toSet(opts.Required)
+	if !g.st.State.Verified() {
+		return
+	}
+	next := StateBlocked
+	if subset(g.st.Countries, g.allowed) {
+		next = StateAllowed
+	}
+	if next != g.st.State {
+		g.log.Info("state changed", "from", g.st.State, "to", next, "reason", "allowed countries changed")
+		g.st.State = next
+		g.st.Reason = ""
+		if next == StateBlocked {
+			g.st.Reason = "country " + g.st.Country + " not allowed"
+		}
+		g.notifyLocked()
 	}
 }
 
@@ -184,9 +251,10 @@ func (g *Guard) Run(ctx context.Context) {
 		gen := g.gen
 		g.startSeq++
 		seq := g.startSeq
+		checker := g.checker
 		g.mu.Unlock()
 
-		res := g.checker.Check(ctx)
+		res := checker.Check(ctx)
 		if ctx.Err() != nil {
 			return
 		}
@@ -240,12 +308,25 @@ func (g *Guard) apply(gen, seq uint64, res Result) time.Duration {
 		IPv4:      res.IPv4,
 		IPv6:      res.IPv6,
 		Country:   res.Country,
+		Countries: res.Countries,
 		Provider:  res.Provider,
 		Reason:    res.Reason,
 		CheckedAt: now,
 	}
-	if res.State != StateAllowed && res.State != StateBlocked {
+	switch {
+	case !res.State.Verified() || len(res.Countries) == 0:
 		next.State = StateUnknown // never let an unexpected value through
+		next.Countries = nil
+	case subset(res.Countries, g.allowed):
+		// The checker's own verdict is ignored: the guard judges against
+		// the current union of allowed countries, which may have changed.
+		next.State = StateAllowed
+		next.Reason = ""
+	default:
+		next.State = StateBlocked
+		if next.Reason == "" {
+			next.Reason = "country " + next.Country + " not allowed"
+		}
 	}
 
 	if prev.IPv4 != "" && next.IPv4 != "" && prev.IPv4 != next.IPv4 {
