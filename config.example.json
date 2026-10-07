@@ -1,0 +1,35 @@
+{
+  "application": {
+    "darwin": {
+      "path": "/Applications/Target.app",
+      "bundle_id": "com.vendor.target",
+      "team_id": ""
+    },
+    "windows": {
+      "path": "C:\\Program Files\\Target\\Target.exe",
+      "publisher": ""
+    }
+  },
+
+  "allowed_countries": ["TH"],
+
+  "process_check_interval_ms": 500,
+  "network_check_interval_seconds": 30,
+  "unknown_retry_seconds": 5,
+  "network_timeout_ms": 3000,
+  "network_debounce_ms": 300,
+  "terminate_timeout_ms": 2000,
+
+  "geoip": {
+    "policy": "first_success",
+    "ipv6": "auto",
+    "providers": [
+      { "type": "ipinfo_lite", "token": "YOUR_IPINFO_TOKEN" },
+      { "type": "cloudflare_trace" }
+    ]
+  },
+
+  "logging": {
+    "level": "info"
+  }
+}

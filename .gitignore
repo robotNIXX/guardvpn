@@ -1,0 +1,57 @@
+# --- Build output ---
+/bin/
+/dist/
+/vpn-guard
+/vpn-guard.exe
+*.exe
+*.dll
+*.so
+*.dylib
+
+# --- Go ---
+*.test
+*.out
+*.prof
+*.pprof
+coverage.*
+/vendor/
+go.work
+go.work.sum
+
+# --- Local configuration (contains the GeoIP token) ---
+# Only config.example.json is tracked.
+/config.json
+/config.*.json
+!/config.example.json
+.last-known-application.json
+.env
+.env.*
+
+# --- Logs and runtime files ---
+*.log
+*.log.*
+*.sock
+
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# --- Windows ---
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# --- Editors / IDEs ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.fleet/
+.zed/
+
+# --- Claude Code local settings ---
+.claude/settings.local.json

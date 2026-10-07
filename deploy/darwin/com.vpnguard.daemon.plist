@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.vpnguard.daemon</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/vpn-guard</string>
+		<string>run</string>
+		<string>-config</string>
+		<string>/etc/vpn-guard/config.json</string>
+	</array>
+
+	<!-- Start at boot, before any user logs in, and restart on any exit. -->
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<!-- Minimum delay between restarts (launchd default is 10 s). -->
+	<key>ThrottleInterval</key>
+	<integer>2</integer>
+
+	<!-- Keep 500 ms timers precise: no background timer coalescing. -->
+	<key>ProcessType</key>
+	<string>Interactive</string>
+
+	<key>UserName</key>
+	<string>root</string>
+	<key>GroupName</key>
+	<string>wheel</string>
+
+	<!-- Events go to /var/log/vpn-guard.log (written by the daemon);
+	     errors and crash output to stderr. -->
+	<key>StandardErrorPath</key>
+	<string>/var/log/vpn-guard-error.log</string>
+	<key>StandardOutPath</key>
+	<string>/var/log/vpn-guard-error.log</string>
+</dict>
+</plist>
