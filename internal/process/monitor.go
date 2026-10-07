@@ -180,6 +180,7 @@ func (m *Monitor) scan(ctx context.Context) {
 
 	current := map[Key]running{}
 	deny := map[Key]bool{}
+	direct := map[Key]bool{} // matched by identity, not only as a descendant
 	for ti, t := range m.targets {
 		isTarget := func(p Proc) bool {
 			k := verdictKey{p.Key(), p.Path, ti}
@@ -198,6 +199,9 @@ func (m *Monitor) scan(ctx context.Context) {
 		// between is picked up by the next scan, which Changes triggers.
 		allowed := t.Policy.Allowed()
 		for _, p := range matched {
+			if m.verdicts[verdictKey{p.Key(), p.Path, ti}] {
+				direct[p.Key()] = true
+			}
 			r := current[p.Key()]
 			r.proc = p
 			r.targets = append(r.targets, t.Name)
@@ -213,7 +217,13 @@ func (m *Monitor) scan(ctx context.Context) {
 	for k, r := range current {
 		name := strings.Join(r.targets, ",")
 		if prev, seen := m.running[k]; !seen || !slices.Equal(prev.targets, r.targets) {
-			m.log.Info("application detected", "app", name, "pid", r.proc.PID,
+			// Descendants (shells, helpers launched by the app) are logged
+			// at debug level only: they can be numerous and short-lived.
+			logf := m.log.Debug
+			if direct[k] {
+				logf = m.log.Info
+			}
+			logf("application detected", "app", name, "pid", r.proc.PID,
 				"ppid", r.proc.PPID, "path", r.proc.Path, "allowed", !deny[k])
 		}
 		if deny[k] && !m.terminating[k] {

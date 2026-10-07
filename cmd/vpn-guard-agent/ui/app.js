@@ -271,7 +271,26 @@ function renderApps() {
       st ? el("span", { class: "badge " + st.state }, stateRu(st.state)) : null,
       el("button", {
         class: "btn small danger", disabled: ro, "data-edit": true,
-        onclick: () => { if (confirm(`Удалить «${app.name}» из списка?`)) { S.config.applications.splice(i, 1); render(); } },
+        // Two-step confirmation inside the card: window.confirm() is not
+        // available in the embedded WebView (it silently returns false).
+        onclick: (e) => {
+          const b = e.currentTarget;
+          if (b.dataset.armed) {
+            clearTimeout(Number(b.dataset.timer));
+            S.config.applications.splice(i, 1);
+            render();
+            toast(`«${app.name}» удалено из списка. Нажмите «Сохранить и применить».`);
+            return;
+          }
+          b.dataset.armed = "1";
+          b.textContent = "Точно удалить?";
+          b.classList.add("primary-danger");
+          b.dataset.timer = String(setTimeout(() => {
+            delete b.dataset.armed;
+            b.textContent = "Удалить";
+            b.classList.remove("primary-danger");
+          }, 4000));
+        },
       }, "Удалить"));
     card.append(head);
 

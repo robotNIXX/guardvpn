@@ -116,15 +116,42 @@ if [ "$AGENT" -eq 1 ]; then
 	if [ "$CONSOLE_UID" -ne 0 ]; then
 		launchctl bootout "gui/$CONSOLE_UID/$AGENT_LABEL" 2>/dev/null || true
 	fi
-	rm -rf "$APP_DST"
-	ditto "$APP" "$APP_DST"
-	chown -R root:wheel "$APP_DST"
-	chmod -R go-w "$APP_DST"
-	xattr -dr com.apple.quarantine "$APP_DST" 2>/dev/null || true
-	install -o root -g wheel -m 0644 "$AGENT_PLIST_SRC" "$AGENT_PLIST_DST"
-	if [ "$CONSOLE_UID" -ne 0 ]; then
-		launchctl bootstrap "gui/$CONSOLE_UID" "$AGENT_PLIST_DST" 2>/dev/null || true
-		echo "VPN Guard menu bar app started for uid $CONSOLE_UID"
+	pkill -x vpn-guard-agent 2>/dev/null || true
+
+	# macOS protects apps in /Applications ("App Management"): even root
+	# gets "Operation not permitted" unless the terminal app is allowed in
+	# System Settings > Privacy & Security > App Management. Do not abort
+	# half-way: report it and restart whatever app is installed.
+	AGENT_OK=1
+	if [ -e "$APP_DST" ] && ! rm -rf "$APP_DST" 2>/tmp/vpn-guard-install.err; then
+		AGENT_OK=0
 	fi
-	echo "VPN Guard menu bar app installed: $APP_DST (starts at login)"
+	if [ "$AGENT_OK" -eq 1 ] && ! ditto "$APP" "$APP_DST" 2>>/tmp/vpn-guard-install.err; then
+		AGENT_OK=0
+	fi
+	if [ "$AGENT_OK" -eq 1 ]; then
+		chown -R root:wheel "$APP_DST"
+		chmod -R go-w "$APP_DST"
+		xattr -dr com.apple.quarantine "$APP_DST" 2>/dev/null || true
+	fi
+	install -o root -g wheel -m 0644 "$AGENT_PLIST_SRC" "$AGENT_PLIST_DST"
+	if [ "$CONSOLE_UID" -ne 0 ] && [ -d "$APP_DST" ]; then
+		launchctl bootstrap "gui/$CONSOLE_UID" "$AGENT_PLIST_DST" 2>/dev/null ||
+			launchctl kickstart -k "gui/$CONSOLE_UID/$AGENT_LABEL" 2>/dev/null || true
+	fi
+
+	if [ "$AGENT_OK" -eq 1 ]; then
+		rm -f /tmp/vpn-guard-install.err
+		echo "VPN Guard menu bar app installed: $APP_DST (starts at login)"
+	else
+		echo >&2
+		echo "error: could not replace $APP_DST:" >&2
+		sed 's/^/  /' /tmp/vpn-guard-install.err >&2 || true
+		echo >&2
+		echo "macOS blocks changes to apps in /Applications unless the terminal has the" >&2
+		echo "\"App Management\" permission. Allow it in:" >&2
+		echo "  System Settings > Privacy & Security > App Management > (your terminal app)" >&2
+		echo "then run this installer again. The daemon is already updated." >&2
+		exit 1
+	fi
 fi

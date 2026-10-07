@@ -87,6 +87,7 @@ code, .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; 
 .btn:hover:not(:disabled) { border-color: var(--accent); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 .btn.danger { color: var(--bad); }
+.btn.primary-danger { background: var(--bad); border-color: var(--bad); color: #fff; }
 .btn:disabled { opacity: .5; cursor: default; }
 .btn.small { padding: 3px 10px; font-size: 12.5px; }
 
